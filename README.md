@@ -1,10 +1,10 @@
 # KubeLens
 
-> Natural language Kubernetes debugging via MCP — ask questions about your clusters directly from Claude or Cursor.
+> Natural language Kubernetes debugging via MCP — ask questions about your clusters directly from Claude Code or Cursor.
 
 ## What it does
 
-KubeLens is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server in Go that exposes read-only Kubernetes APIs as LLM-callable tools. Connect it to Claude Desktop or Cursor and debug your clusters in plain English — no kubectl flags, no API group lookups.
+KubeLens is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server in Go that exposes read-only Kubernetes APIs as LLM-callable tools. Connect it to Claude Code or Cursor and debug your clusters in plain English — no kubectl flags, no API group lookups.
 
 **Example queries:**
 - *"Why are my pods crashing in the payments namespace?"*
@@ -16,73 +16,68 @@ KubeLens is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io) s
 ## Architecture
 
 ```
-Claude Desktop / Cursor
-        │  MCP protocol (stdio)
+Claude Code / Cursor
+        │  MCP protocol (SSE + JSON-RPC 2.0 over HTTP)
         ▼
-  KubeLens MCP Server (Go)
-        │  GCP Application Default Credentials
-        │  client-go
+  KubeLens MCP Server (Go, :8080)
+        │  GET /sse   — long-lived SSE connection (server → client)
+        │  POST /mcp  — stateless JSON-RPC endpoint (client → server)
+        │
+        │  Per-request auth: (api_server, token, ca_cert)
+        │  client-go with static bearer token
         ▼
-  GKE Clusters (via kubeconfig contexts)
+  Any Kubernetes Cluster (GKE, EKS, AKS, self-hosted)
 ```
 
 ## Available Tools
 
 | Tool | Description |
 |------|-------------|
-| `list_clusters` | List all kubeconfig contexts |
-| `list_namespaces` | List namespaces in a cluster |
-| `list_pods` | Pods with status, restarts, phase |
-| `get_pod_logs` | Last N log lines from a pod |
-| `get_events` | Warning events in a namespace |
-| `list_deployments` | Deployments with replica status |
-| `list_nodes` | Nodes with health conditions |
-| `list_crds` | All installed CRDs |
-| `get_crd_instances` | Instances of any CRD |
+| `list_namespaces` | List all namespaces in a cluster |
+| `list_pods` | Pods with phase, readiness, restart count, and node |
+| `get_pod_logs` | Last N log lines from a specific pod (default: 100) |
+| `get_events` | Warning events in a namespace (OOMKills, probe failures, etc.) |
+| `list_deployments` | Deployments with desired vs ready vs available replicas |
+| `list_nodes` | Nodes with health conditions (Ready, MemoryPressure, DiskPressure) |
+| `list_crds` | All Custom Resource Definitions installed in a cluster |
+| `get_crd_instances` | Instances of any CRD by group/version/resource |
 
 All operations are **read-only**. KubeLens never modifies cluster state.
 
 ## Prerequisites
 
 - Go 1.22+
-- `gcloud` CLI installed
-- A valid `~/.kube/config` with GKE cluster contexts
+- A Kubernetes cluster with API server access
+- A bearer token for authentication (e.g., `gcloud auth print-access-token` for GKE)
 
 ## Setup
 
 ```bash
-# 1. Authenticate with GCP (only needed once)
-gcloud auth application-default login
-
-# 2. Make sure your kubeconfig has the clusters you want
-gcloud container clusters get-credentials <cluster-name> --region <region> --project <project>
-
-# 3. Clone and build
+# 1. Clone and build
 git clone https://github.com/AdityaK011/kubelens
 cd kubelens
 go mod tidy
 go build -o kubelens ./cmd/kubelens
 
-# 4. Test it works
+# 2. Run the server (default port 8080, configurable via PORT env var)
 ./kubelens
-# Should print: KubeLens ready — listening on stdio
+# Prints: KubeLens MCP server listening on :8080
 ```
 
-## Connect to Claude Desktop
+## Connect to Claude Code
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
+Add to `.mcp.json` in your project root:
 
 ```json
 {
   "mcpServers": {
     "kubelens": {
-      "command": "/absolute/path/to/kubelens"
+      "type": "sse",
+      "url": "http://localhost:8080/sse"
     }
   }
 }
 ```
-
-Restart Claude Desktop. You'll see KubeLens appear in the tools list.
 
 ## Connect to Cursor
 
@@ -92,7 +87,8 @@ Add to `.cursor/mcp.json` in your project root:
 {
   "mcpServers": {
     "kubelens": {
-      "command": "/absolute/path/to/kubelens"
+      "type": "sse",
+      "url": "http://localhost:8080/sse"
     }
   }
 }
@@ -100,11 +96,28 @@ Add to `.cursor/mcp.json` in your project root:
 
 ## Authentication
 
-KubeLens uses **GCP Application Default Credentials (ADC)** — the same credentials `gcloud` and `kubectl` use when talking to GKE. No separate auth configuration needed.
+KubeLens uses **per-request authentication**. Every tool call requires:
 
-If you're not authenticated, KubeLens will tell you exactly what to run:
-```
-not authenticated — run: gcloud auth application-default login
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `api_server` | Yes | Kubernetes API server URL (e.g., `https://34.84.197.216`) |
+| `token` | Yes | Bearer token for API authentication |
+| `ca_cert` | No | Base64-encoded PEM CA certificate for TLS verification |
+| `insecure` | No | Skip TLS verification (default: false) |
+
+This design makes the server **stateless and cluster-agnostic** — each request can target a different cluster. The server has no kubeconfig dependency.
+
+**Getting a token by cloud provider:**
+
+```bash
+# GKE
+gcloud auth print-access-token
+
+# EKS
+aws eks get-token --cluster-name <name> --output json | jq -r '.status.token'
+
+# AKS
+az account get-access-token --query accessToken -o tsv
 ```
 
 For least-privilege access, apply this RBAC to your clusters:
@@ -117,7 +130,7 @@ metadata:
 rules:
 - apiGroups: ["*"]
   resources: ["*"]
-  verbs: ["get", "list", "watch"]
+  verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -125,7 +138,7 @@ metadata:
   name: kubelens-reader
 subjects:
 - kind: User
-  name: your-google-account@gmail.com
+  name: your-account@example.com
   apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: ClusterRole
@@ -137,16 +150,16 @@ roleRef:
 
 ```
 kubelens/
-├── cmd/kubelens/         # Entrypoint
+├── cmd/kubelens/         # Entrypoint, graceful shutdown
 ├── internal/
-│   ├── server/           # MCP JSON-RPC server (stdio transport)
-│   └── k8s/              # Multi-cluster Kubernetes client manager
+│   ├── server/           # MCP JSON-RPC server (SSE + HTTP transport)
+│   └── k8s/              # Kubernetes client with per-request auth and caching
 └── pkg/tools/            # MCP tool definitions (JSON schemas)
 ```
 
 ## Roadmap
 
+- [ ] TLS support for hosted deployments
 - [ ] Helm release inspection
-- [ ] OPA/Gatekeeper policy violation lookup
 - [ ] Resource requests vs actual usage (right-sizing hints)
-- [ ] Multi-cluster event correlation
+- [ ] Pagination for large list responses
