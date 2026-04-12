@@ -1,165 +1,107 @@
 # KubeLens
 
-> Natural language Kubernetes debugging via MCP — ask questions about your clusters directly from Claude Code or Cursor.
+A hosted MCP server that lets AI assistants (Claude Code, Cursor, etc.) interact with your GKE clusters using **your own Google identity**. No shared service accounts, no manual token passing — you log in once via browser and the server handles everything.
 
-## What it does
+## How it works
 
-KubeLens is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server in Go that exposes read-only Kubernetes APIs as LLM-callable tools. Connect it to Claude Code or Cursor and debug your clusters in plain English — no kubectl flags, no API group lookups.
+1. You connect Claude Code to the KubeLens server URL
+2. First time, a browser opens → you log in with Google
+3. KubeLens stores your tokens server-side and issues a session ID
+4. Claude Code sends the session ID on every MCP request
+5. KubeLens uses your Google access token to call the GKE API
+6. All K8s operations run as **your IAM identity** with your RBAC permissions
 
-**Example queries:**
-- *"Why are my pods crashing in the payments namespace?"*
-- *"Are there any nodes under memory pressure in the prod cluster?"*
-- *"List all CRDs installed in staging"*
-- *"Show me warning events in the checkout namespace"*
-- *"What's the replica status of all deployments in the api namespace?"*
+## Prerequisites
+
+- Go 1.23+
+- A Google Cloud project with the GKE API enabled
+- An OAuth 2.0 client ID (Web Application type) from Google Cloud Console
+
+### Create the OAuth client
+
+1. Go to [Google Cloud Console → APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials)
+2. Create OAuth Client ID → **Web Application**
+3. Add authorized redirect URI: `https://your-domain.com/callback`
+4. Save the Client ID and Client Secret
+
+## Run locally
+
+```bash
+export GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+export GOOGLE_CLIENT_SECRET=your-client-secret
+export REDIRECT_URL=http://localhost:8080/callback
+export PORT=8080
+
+go run ./cmd/server
+```
+
+## Connect from Claude Code
+
+```bash
+claude mcp add --transport http kubelens http://localhost:8080/mcp
+```
+
+Then use it:
+
+```
+> list all clusters in project my-gcp-project
+> show me crashing pods in namespace payments on cluster prod-us
+> get logs from pod api-gateway-xyz in namespace default on cluster dev
+```
+
+## Deploy to Cloud Run
+
+```bash
+# Build and push
+docker build -t gcr.io/YOUR_PROJECT/kubelens .
+docker push gcr.io/YOUR_PROJECT/kubelens
+
+# Deploy
+gcloud run deploy kubelens \
+  --image gcr.io/YOUR_PROJECT/kubelens \
+  --set-env-vars "GOOGLE_CLIENT_ID=xxx,GOOGLE_CLIENT_SECRET=xxx,REDIRECT_URL=https://kubelens-xxx.run.app/callback" \
+  --allow-unauthenticated \
+  --port 8080
+```
+
+Update the OAuth client's redirect URI to match the Cloud Run URL.
+
+## Available tools
+
+| Tool | Description |
+|------|-------------|
+| `list_clusters` | List all GKE clusters in a project |
+| `list_pods` | List pods with status, restarts, age |
+| `describe_pod` | Detailed pod info: conditions, containers, resources |
+| `get_pod_logs` | Tail logs from a pod's container |
+| `get_events` | Recent K8s events sorted by time |
+| `get_nodes` | Node status, version, capacity, zone |
 
 ## Architecture
 
 ```
-Claude Code / Cursor
-        │  MCP protocol (SSE + JSON-RPC 2.0 over HTTP)
-        ▼
-  KubeLens MCP Server (Go, :8080)
-        │  GET /sse   — long-lived SSE connection (server → client)
-        │  POST /mcp  — stateless JSON-RPC endpoint (client → server)
-        │
-        │  Per-request auth: (api_server, token, ca_cert)
-        │  client-go with static bearer token
-        ▼
-  Any Kubernetes Cluster (GKE, EKS, AKS, self-hosted)
+Claude Code ──Bearer: session_id──▶ KubeLens MCP Server ──Bearer: ya29.xxx──▶ GKE API Server
+                                         │
+                                         ├── OAuth flow (one-time)
+                                         ├── Session store (in-memory)
+                                         └── Token refresh (automatic)
 ```
 
-## Available Tools
-
-| Tool | Description |
-|------|-------------|
-| `list_namespaces` | List all namespaces in a cluster |
-| `list_pods` | Pods with phase, readiness, restart count, and node |
-| `get_pod_logs` | Last N log lines from a specific pod (default: 100) |
-| `get_events` | Warning events in a namespace (OOMKills, probe failures, etc.) |
-| `list_deployments` | Deployments with desired vs ready vs available replicas |
-| `list_nodes` | Nodes with health conditions (Ready, MemoryPressure, DiskPressure) |
-| `list_crds` | All Custom Resource Definitions installed in a cluster |
-| `get_crd_instances` | Instances of any CRD by group/version/resource |
-
-All operations are **read-only**. KubeLens never modifies cluster state.
-
-## Prerequisites
-
-- Go 1.22+
-- A Kubernetes cluster with API server access
-- A bearer token for authentication (e.g., `gcloud auth print-access-token` for GKE)
-
-## Setup
-
-```bash
-# 1. Clone and build
-git clone https://github.com/AdityaK011/kubelens
-cd kubelens
-go mod tidy
-go build -o kubelens ./cmd/kubelens
-
-# 2. Run the server (default port 8080, configurable via PORT env var)
-./kubelens
-# Prints: KubeLens MCP server listening on :8080
-```
-
-## Connect to Claude Code
-
-Add to `.mcp.json` in your project root:
-
-```json
-{
-  "mcpServers": {
-    "kubelens": {
-      "type": "sse",
-      "url": "http://localhost:8080/sse"
-    }
-  }
-}
-```
-
-## Connect to Cursor
-
-Add to `.cursor/mcp.json` in your project root:
-
-```json
-{
-  "mcpServers": {
-    "kubelens": {
-      "type": "sse",
-      "url": "http://localhost:8080/sse"
-    }
-  }
-}
-```
-
-## Authentication
-
-KubeLens uses **per-request authentication**. Every tool call requires:
-
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `api_server` | Yes | Kubernetes API server URL (e.g., `https://34.84.197.216`) |
-| `token` | Yes | Bearer token for API authentication |
-| `ca_cert` | No | Base64-encoded PEM CA certificate for TLS verification |
-| `insecure` | No | Skip TLS verification (default: false) |
-
-This design makes the server **stateless and cluster-agnostic** — each request can target a different cluster. The server has no kubeconfig dependency.
-
-**Getting a token by cloud provider:**
-
-```bash
-# GKE
-gcloud auth print-access-token
-
-# EKS
-aws eks get-token --cluster-name <name> --output json | jq -r '.status.token'
-
-# AKS
-az account get-access-token --query accessToken -o tsv
-```
-
-For least-privilege access, apply this RBAC to your clusters:
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: kubelens-reader
-rules:
-- apiGroups: ["*"]
-  resources: ["*"]
-  verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: kubelens-reader
-subjects:
-- kind: User
-  name: your-account@example.com
-  apiGroup: rbac.authorization.k8s.io
-roleRef:
-  kind: ClusterRole
-  name: kubelens-reader
-  apiGroup: rbac.authorization.k8s.io
-```
-
-## Project Structure
+## Project structure
 
 ```
 kubelens/
-├── cmd/kubelens/         # Entrypoint, graceful shutdown
+├── cmd/server/main.go           # Entrypoint, wires OAuth + MCP
 ├── internal/
-│   ├── server/           # MCP JSON-RPC server (SSE + HTTP transport)
-│   └── k8s/              # Kubernetes client with per-request auth and caching
-└── pkg/tools/            # MCP tool definitions (JSON schemas)
+│   ├── auth/
+│   │   ├── oauth.go             # Google OAuth flow handlers
+│   │   ├── session.go           # Session + pending auth store
+│   │   └── middleware.go        # Bearer token extraction
+│   ├── k8s/
+│   │   └── client.go            # Build k8s client from user token
+│   └── tools/
+│       └── tools.go             # MCP tool definitions + handlers
+├── Dockerfile
+├── go.mod
+└── README.md
 ```
-
-## Roadmap
-
-- [ ] TLS support for hosted deployments
-- [ ] Helm release inspection
-- [ ] Resource requests vs actual usage (right-sizing hints)
-- [ ] Pagination for large list responses
