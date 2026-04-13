@@ -3,9 +3,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /kubelens ./cmd/server
+RUN CGO_ENABLED=0 go build -o /k8scope ./cmd/server
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /kubelens /kubelens
+COPY --from=build /k8scope /k8scope
 EXPOSE 8080
-ENTRYPOINT ["/kubelens"]
+ENTRYPOINT ["/k8scope"]

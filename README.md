@@ -1,14 +1,14 @@
-# KubeLens
+# k8scope
 
 A hosted MCP server that lets AI assistants (Claude Code, Cursor, etc.) interact with your GKE clusters using **your own Google identity**. No shared service accounts, no manual token passing — you log in once via browser and the server handles everything.
 
 ## How it works
 
-1. You connect Claude Code to the KubeLens server URL
+1. You connect Claude Code to the k8scope server URL
 2. First time, a browser opens → you log in with Google
-3. KubeLens stores your tokens server-side and issues a session ID
+3. k8scope stores your tokens server-side and issues a session ID
 4. Claude Code sends the session ID on every MCP request
-5. KubeLens uses your Google access token to call the GKE API
+5. k8scope uses your Google access token to call the GKE API
 6. All K8s operations run as **your IAM identity** with your RBAC permissions
 
 ## Prerequisites
@@ -38,7 +38,7 @@ go run ./cmd/server
 ## Connect from Claude Code
 
 ```bash
-claude mcp add --transport http kubelens http://localhost:8080/mcp
+claude mcp add --transport http k8scope http://localhost:8080/mcp
 ```
 
 Then use it:
@@ -53,13 +53,13 @@ Then use it:
 
 ```bash
 # Build and push
-docker build -t gcr.io/YOUR_PROJECT/kubelens .
-docker push gcr.io/YOUR_PROJECT/kubelens
+docker build -t gcr.io/YOUR_PROJECT/k8scope .
+docker push gcr.io/YOUR_PROJECT/k8scope
 
 # Deploy
-gcloud run deploy kubelens \
-  --image gcr.io/YOUR_PROJECT/kubelens \
-  --set-env-vars "GOOGLE_CLIENT_ID=xxx,GOOGLE_CLIENT_SECRET=xxx,REDIRECT_URL=https://kubelens-xxx.run.app/callback" \
+gcloud run deploy k8scope \
+  --image gcr.io/YOUR_PROJECT/k8scope \
+  --set-env-vars "GOOGLE_CLIENT_ID=xxx,GOOGLE_CLIENT_SECRET=xxx,REDIRECT_URL=https://k8scope-xxx.run.app/callback" \
   --allow-unauthenticated \
   --port 8080
 ```
@@ -80,7 +80,7 @@ Update the OAuth client's redirect URI to match the Cloud Run URL.
 ## Architecture
 
 ```
-Claude Code ──Bearer: session_id──▶ KubeLens MCP Server ──Bearer: ya29.xxx──▶ GKE API Server
+Claude Code ──Bearer: session_id──▶ k8scope MCP Server ──Bearer: ya29.xxx──▶ GKE API Server
                                          │
                                          ├── OAuth flow (one-time)
                                          ├── Session store (in-memory)
@@ -90,7 +90,7 @@ Claude Code ──Bearer: session_id──▶ KubeLens MCP Server ──Bearer: 
 ## Project structure
 
 ```
-kubelens/
+k8scope/
 ├── cmd/server/main.go           # Entrypoint, wires OAuth + MCP
 ├── internal/
 │   ├── auth/

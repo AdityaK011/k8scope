@@ -12,15 +12,15 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/AdityaK011/kubelens/internal/auth"
-	"github.com/AdityaK011/kubelens/internal/tools"
+	"github.com/AdityaK011/k8scope/internal/auth"
+	"github.com/AdityaK011/k8scope/internal/tools"
 )
 
 func main() {
 	// Required env vars.
 	clientID := mustEnv("GOOGLE_CLIENT_ID")
 	clientSecret := mustEnv("GOOGLE_CLIENT_SECRET")
-	redirectURL := mustEnv("REDIRECT_URL") // e.g. https://kubelens.example.com/callback
+	redirectURL := mustEnv("REDIRECT_URL") // e.g. https://k8scope.example.com/callback
 	port := getEnv("PORT", "8080")
 
 	// Init OAuth handler.
@@ -31,7 +31,7 @@ func main() {
 
 	// Init MCP server.
 	mcpServer := server.NewMCPServer(
-		"kubelens",
+		"k8scope",
 		"0.1.0",
 		server.WithToolCapabilities(true),
 	)
@@ -57,7 +57,7 @@ func main() {
 	mux.Handle("/mcp", oauth.Middleware(mcpHTTP))
 
 	addr := fmt.Sprintf(":%s", port)
-	slog.Info("kubelens MCP server starting",
+	slog.Info("k8scope MCP server starting",
 		"port", port,
 		"redirect_url", redirectURL,
 	)
