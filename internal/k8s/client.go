@@ -10,6 +10,7 @@ import (
 	container "google.golang.org/api/container/v1"
 	"google.golang.org/api/option"
 	"golang.org/x/oauth2"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -55,6 +56,24 @@ func NewClientForUser(ctx context.Context, accessToken string, cluster ClusterIn
 	}
 
 	return kubernetes.NewForConfig(config)
+}
+
+// NewDynamicClientForUser builds a dynamic Kubernetes client for CRDs and generic resources.
+func NewDynamicClientForUser(ctx context.Context, accessToken string, cluster ClusterInfo) (dynamic.Interface, error) {
+	endpoint, ca, err := getCachedClusterDetails(ctx, accessToken, cluster)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get cluster details: %w", err)
+	}
+
+	config := &rest.Config{
+		Host:        "https://" + endpoint,
+		BearerToken: accessToken,
+		TLSClientConfig: rest.TLSClientConfig{
+			CAData: ca,
+		},
+	}
+
+	return dynamic.NewForConfig(config)
 }
 
 // getCachedClusterDetails returns the cluster endpoint and CA from cache,

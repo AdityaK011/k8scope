@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -14,8 +15,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/AdityaK011/kubelens/internal/auth"
-	k8sClient "github.com/AdityaK011/kubelens/internal/k8s"
+	"github.com/AdityaK011/k8scope/internal/auth"
+	k8sClient "github.com/AdityaK011/k8scope/internal/k8s"
 )
 
 // Register adds all MCP tools to the server.
@@ -26,6 +27,20 @@ func Register(s *server.MCPServer) {
 	s.AddTool(getPodLogsTool(), handleGetPodLogs)
 	s.AddTool(getEventsTool(), handleGetEvents)
 	s.AddTool(getNodesTool(), handleGetNodes)
+	s.AddTool(listNamespacesTool(), handleListNamespaces)
+	s.AddTool(listDeploymentsTool(), handleListDeployments)
+	s.AddTool(describeDeploymentTool(), handleDescribeDeployment)
+	s.AddTool(listServicesTool(), handleListServices)
+	s.AddTool(listIngressesTool(), handleListIngresses)
+	s.AddTool(listJobsTool(), handleListJobs)
+	s.AddTool(listHPATool(), handleListHPA)
+	s.AddTool(listPVCsTool(), handleListPVCs)
+	s.AddTool(listConfigMapsTool(), handleListConfigMaps)
+	s.AddTool(listStatefulSetsTool(), handleListStatefulSets)
+	s.AddTool(listDaemonSetsTool(), handleListDaemonSets)
+	s.AddTool(listCRDsTool(), handleListCRDs)
+	s.AddTool(getCRDInstancesTool(), handleGetCRDInstances)
+	s.AddTool(getResourceYAMLTool(), handleGetResourceYAML)
 }
 
 // --- Tool definitions ---
@@ -138,6 +153,12 @@ func errResult(format string, a ...interface{}) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultError(fmt.Sprintf(format, a...)), nil
 }
 
+// safeErr logs the error server-side and returns it to the client.
+func safeErr(clientMsg string, err error) (*mcp.CallToolResult, error) {
+	slog.Error(clientMsg, "error", err)
+	return mcp.NewToolResultError(fmt.Sprintf("%s: %v", clientMsg, err)), nil
+}
+
 // --- Handlers ---
 
 func handleListClusters(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -155,7 +176,7 @@ func handleListClusters(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 
 	clusters, err := k8sClient.ListClusters(ctx, session.AccessToken, project)
 	if err != nil {
-		return errResult("failed to list clusters: %v", err)
+		return safeErr("failed to list clusters", err)
 	}
 
 	var sb strings.Builder
@@ -188,13 +209,13 @@ func handleListPods(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 	}
 	client, err := k8sClient.NewClientForUser(ctx, session.AccessToken, ci)
 	if err != nil {
-		return errResult("auth/connect failed: %v", err)
+		return safeErr("failed to connect to cluster", err)
 	}
 
 	const podLimit = 500
 	pods, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{Limit: podLimit})
 	if err != nil {
-		return errResult("k8s error: %v", err)
+		return safeErr("kubernetes API error", err)
 	}
 
 	var sb strings.Builder
@@ -247,12 +268,12 @@ func handleDescribePod(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	}
 	client, err := k8sClient.NewClientForUser(ctx, session.AccessToken, ci)
 	if err != nil {
-		return errResult("auth/connect failed: %v", err)
+		return safeErr("failed to connect to cluster", err)
 	}
 
 	pod, err := client.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
-		return errResult("k8s error: %v", err)
+		return safeErr("kubernetes API error", err)
 	}
 
 	var sb strings.Builder
@@ -328,7 +349,7 @@ func handleGetPodLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	}
 	client, err := k8sClient.NewClientForUser(ctx, session.AccessToken, ci)
 	if err != nil {
-		return errResult("auth/connect failed: %v", err)
+		return safeErr("failed to connect to cluster", err)
 	}
 
 	opts := &corev1.PodLogOptions{
@@ -340,14 +361,14 @@ func handleGetPodLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 
 	stream, err := client.CoreV1().Pods(namespace).GetLogs(podName, opts).Stream(ctx)
 	if err != nil {
-		return errResult("failed to get logs: %v", err)
+		return safeErr("failed to get logs", err)
 	}
 	defer stream.Close()
 
 	const maxLogBytes = 1 << 20 // 1 MB
 	logs, err := io.ReadAll(io.LimitReader(stream, maxLogBytes))
 	if err != nil {
-		return errResult("failed to read log stream: %v", err)
+		return safeErr("failed to read log stream", err)
 	}
 
 	if len(logs) == 0 {
@@ -373,12 +394,12 @@ func handleGetEvents(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	}
 	client, err := k8sClient.NewClientForUser(ctx, session.AccessToken, ci)
 	if err != nil {
-		return errResult("auth/connect failed: %v", err)
+		return safeErr("failed to connect to cluster", err)
 	}
 
 	events, err := client.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{Limit: 200})
 	if err != nil {
-		return errResult("k8s error: %v", err)
+		return safeErr("kubernetes API error", err)
 	}
 
 	// Sort by last timestamp (most recent first) — the API doesn't guarantee order.
@@ -428,13 +449,13 @@ func handleGetNodes(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 	}
 	client, err := k8sClient.NewClientForUser(ctx, session.AccessToken, ci)
 	if err != nil {
-		return errResult("auth/connect failed: %v", err)
+		return safeErr("failed to connect to cluster", err)
 	}
 
 	const nodeLimit = 500
 	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{Limit: nodeLimit})
 	if err != nil {
-		return errResult("k8s error: %v", err)
+		return safeErr("kubernetes API error", err)
 	}
 
 	var sb strings.Builder
