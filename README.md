@@ -66,7 +66,7 @@ gcloud run deploy k8scope \
 
 Update the OAuth client's redirect URI to match the Cloud Run URL.
 
-## Available tools
+## Available tools (20)
 
 | Tool | Description |
 |------|-------------|
@@ -76,6 +76,20 @@ Update the OAuth client's redirect URI to match the Cloud Run URL.
 | `get_pod_logs` | Tail logs from a pod's container |
 | `get_events` | Recent K8s events sorted by time |
 | `get_nodes` | Node status, version, capacity, zone |
+| `list_namespaces` | List all namespaces in a cluster |
+| `list_deployments` | Deployments with ready/desired replica counts |
+| `describe_deployment` | Detailed deployment: strategy, conditions, containers |
+| `list_services` | Services with type, cluster IP, ports |
+| `list_ingresses` | Ingresses with hosts and paths |
+| `list_jobs` | Jobs with completion and failure counts |
+| `list_hpa` | Horizontal pod autoscalers with scaling targets |
+| `list_pvcs` | Persistent volume claims with status and capacity |
+| `list_configmaps` | Config maps with key counts |
+| `list_statefulsets` | Stateful sets with replica status |
+| `list_daemonsets` | Daemon sets with scheduling status |
+| `list_crds` | Custom resource definitions in the cluster |
+| `get_crd_instances` | Instances of any CRD by group/version/resource |
+| `get_resource_yaml` | Full YAML of any Kubernetes resource |
 
 ## Architecture
 
@@ -91,16 +105,18 @@ Claude Code ──Bearer: session_id──▶ k8scope MCP Server ──Bearer: y
 
 ```
 k8scope/
-├── cmd/server/main.go           # Entrypoint, wires OAuth + MCP
+├── cmd/server/main.go           # Entrypoint, wires OAuth + MCP, graceful shutdown
 ├── internal/
 │   ├── auth/
-│   │   ├── oauth.go             # Google OAuth flow handlers
-│   │   ├── session.go           # Session + pending auth store
-│   │   └── middleware.go        # Bearer token extraction
+│   │   ├── oauth.go             # OAuth flow, Dynamic Client Registration, token refresh
+│   │   ├── session.go           # In-memory store (sessions, clients, codes)
+│   │   ├── middleware.go         # Bearer token extraction, session injection
+│   │   └── ratelimit.go         # Per-IP rate limiting for auth endpoints
 │   ├── k8s/
-│   │   └── client.go            # Build k8s client from user token
+│   │   └── client.go            # Typed + dynamic K8s client, cluster cache
 │   └── tools/
-│       └── tools.go             # MCP tool definitions + handlers
+│       ├── tools.go             # Original 6 tools + helpers
+│       └── tools_extended.go    # 14 new tools (deployments, CRDs, YAML, etc.)
 ├── Dockerfile
 ├── go.mod
 └── README.md
